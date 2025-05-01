@@ -1,0 +1,295 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  Deploys a YOLO inference API using API Gateway,
+  S3 presigned URLs for uploads, S3 triggers, Docker-based Lambda functions,
+  DynamoDB, and S3 storage.
+
+Parameters:
+  ImageBucketName:
+    Type: String
+    Description: Name for the S3 bucket to store input/output images.
+  GenerateUrlHandlerImageUri:
+    Type: String
+    Description: Full ECR Image URI for the GenerateUploadUrl Lambda function.
+  InferenceWorkerImageUri:
+    Type: String
+    Description: Full ECR Image URI for the InferenceWorker Lambda function.
+  ResultsHandlerImageUri:
+    Type: String
+    Description: Full ECR Image URI for the ResultsHandler Lambda function.
+  InferenceWorkerMemory:
+    Type: Number
+    Description: Memory allocation (MB) for the Inference Worker Lambda.
+    Default: 2048
+    MinValue: 128
+  InferenceWorkerTimeout:
+    Type: Number
+    Description: Timeout (seconds) for the Inference Worker Lambda.
+    Default: 300 
+    MinValue: 3
+    MaxValue: 900
+  ModelFilename:
+    Type: String
+    Description: Filename of the YOLO model inside the Inference Worker container.
+    Default: yolov8n.pt
+  PresignedUrlExpiration:
+    Type: Number
+    Description: Expiration time in seconds for the S3 upload URL.
+    Default: 300 
+    MinValue: 60
+    MaxValue: 3600 
+  JwtIssuerUrl: 
+    Type: String 
+    Description: The Issuer URL for the JWT provider (e.g., includes trailing slash for Auth0).
+    Default: https://dev-kbfejgei02ncd25d.us.auth0.com/
+  JwtAudience:
+    Type: String 
+    Description: The Audience value expected in the JWT.
+    Default: https://yolo-authorizer.com
+
+Resources:
+  JobsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub 'yolo-jobs-${AWS::StackName}'
+      AttributeDefinitions:
+        - AttributeName: job_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: job_id
+          KeyType: HASH
+      BillingMode: PAY_PER_REQUEST
+      Tags:
+        - Key: Project
+          Value: YoloApiCfn
+
+  GenerateUrlLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub 'YoloGenerateUrlRole-${AWS::StackName}'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns: 
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole 
+        - arn:aws:iam::aws:policy/AmazonDynamoDBFullAccess 
+        - arn:aws:iam::aws:policy/AmazonS3FullAccess 
+      Tags:
+        - Key: Project
+          Value: YoloApiCfn
+
+  InferenceLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub 'YoloInferenceRole-${AWS::StackName}'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns: 
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/AmazonS3FullAccess
+        - arn:aws:iam::aws:policy/AmazonDynamoDBFullAccess
+      Tags:
+        - Key: Project
+          Value: YoloApiCfn
+
+  ResultsLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub 'YoloResultsRole-${AWS::StackName}'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/AmazonDynamoDBReadOnlyAccess 
+      Tags:
+        - Key: Project
+          Value: YoloApiCfn
+
+  GenerateUploadUrlFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub 'YoloGenerateUploadUrlHandler-${AWS::StackName}'
+      PackageType: Image
+      Code:
+        ImageUri: !Ref GenerateUrlHandlerImageUri
+      Role: !GetAtt GenerateUrlLambdaRole.Arn
+      Timeout: 30
+      MemorySize: 256
+      Environment:
+        Variables:
+          BUCKET_NAME: !Ref ImageBucketName
+          DYNAMODB_TABLE_NAME: !Ref JobsTable
+          URL_EXPIRATION_SECONDS: !Ref PresignedUrlExpiration
+      Tags:
+        - Key: Project
+          Value: YoloApiCfn
+
+  InferenceWorkerFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub 'YoloInferenceWorker-${AWS::StackName}'
+      PackageType: Image
+      Code:
+        ImageUri: !Ref InferenceWorkerImageUri
+      Role: !GetAtt InferenceLambdaRole.Arn
+      Timeout: !Ref InferenceWorkerTimeout
+      MemorySize: !Ref InferenceWorkerMemory
+      Environment:
+        Variables:
+          INPUT_BUCKET: !Ref ImageBucketName 
+          OUTPUT_BUCKET: !Ref ImageBucketName 
+          DYNAMODB_TABLE_NAME: !Ref JobsTable
+          MODEL_FILENAME: !Ref ModelFilename
+      Tags:
+        - Key: Project
+          Value: YoloApiCfn
+
+  ResultsHandlerFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub 'YoloResultsHandler-${AWS::StackName}'
+      PackageType: Image
+      Code:
+        ImageUri: !Ref ResultsHandlerImageUri
+      Role: !GetAtt ResultsLambdaRole.Arn
+      Timeout: 30
+      MemorySize: 256
+      Environment:
+        Variables:
+          DYNAMODB_TABLE_NAME: !Ref JobsTable
+      Tags:
+        - Key: Project
+          Value: YoloApiCfn
+
+  InferenceWorkerS3InvokePermission:
+     Type: AWS::Lambda::Permission
+     Properties:
+       Action: lambda:InvokeFunction
+       FunctionName: !GetAtt InferenceWorkerFunction.Arn
+       Principal: s3.amazonaws.com
+       SourceAccount: !Ref AWS::AccountId
+       SourceArn: !Sub 'arn:aws:s3:::${ImageBucketName}'
+
+  ImageBucketWithNotification:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref ImageBucketName
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      NotificationConfiguration: 
+        LambdaConfigurations:
+          - Event: s3:ObjectCreated:* 
+            Filter:
+              S3Key:
+                Rules:
+                  - Name: prefix
+                    Value: inputs/
+            Function: !GetAtt InferenceWorkerFunction.Arn
+      Tags:
+        - Key: Project
+          Value: YoloApiCfn
+    DependsOn: InferenceWorkerS3InvokePermission 
+
+  HttpApi:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: !Sub 'YoloApi-${AWS::StackName}'
+      ProtocolType: HTTP
+
+  
+  JwtAuthorizer: 
+    Type: AWS::ApiGatewayV2::Authorizer
+    Properties:
+      ApiId: !Ref HttpApi 
+      AuthorizerType: JWT
+      Name: !Sub 'JwtAuthorizer-${AWS::StackName}' 
+      IdentitySource: 
+        - '$request.header.Authorization'
+      JwtConfiguration:
+        Audience: 
+          - !Ref JwtAudience 
+        Issuer: !Ref JwtIssuerUrl 
+
+  HttpApiDefaultStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref HttpApi
+      StageName: '$default' 
+      AutoDeploy: true
+
+  GenerateUrlIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref HttpApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !GetAtt GenerateUploadUrlFunction.Arn
+      PayloadFormatVersion: '2.0' 
+
+  ResultsHandlerIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref HttpApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !GetAtt ResultsHandlerFunction.Arn
+      PayloadFormatVersion: '2.0'
+
+  GenerateUrlRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref HttpApi
+      RouteKey: 'GET /generate-upload-url'
+      Target: !Sub 'integrations/${GenerateUrlIntegration}'
+      AuthorizationType: JWT
+      AuthorizerId: !Ref JwtAuthorizer 
+
+  ResultsRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref HttpApi
+      RouteKey: 'GET /results/{job_id}'
+      Target: !Sub 'integrations/${ResultsHandlerIntegration}'
+
+  GenerateUrlApiGatewayInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt GenerateUploadUrlFunction.Arn
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${HttpApi}/$default/GET/generate-upload-url'
+
+  ResultsHandlerApiGatewayInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt ResultsHandlerFunction.Arn
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${HttpApi}/$default/GET/results/{job_id}'
+
+
+Outputs:
+  ApiEndpoint:
+    Description: The Invoke URL for the deployed HTTP API.
+    Value: !Sub 'https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com'
+  ImageBucketNameOutput:
+    Description: Name of the S3 bucket created for images.
+    Value: !Ref ImageBucketWithNotification 
+  DynamoDbTableNameOutput:
+    Description: Name of the DynamoDB table created for jobs.
+    Value: !Ref JobsTable
