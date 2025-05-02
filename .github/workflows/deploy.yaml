@@ -72,13 +72,13 @@ jobs:
         run: |
           aws cloudformation deploy \
             --template-file yolo_api_stack.yaml \
-            --stack-name YoloApiStack \ 
+            --stack-name YoloApiStack \
             --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM \
             --parameter-overrides \
-              ImageBucketName="yolo-images-stack" \ # Nome EXATO do bucket S3
-              GenerateUrlHandlerImageUri="${{ steps.build-generate-url.outputs.image }}" \ 
-              InferenceWorkerImageUri="${{ steps.build-inference-worker.outputs.image }}" \ 
-              ResultsHandlerImageUri="${{ steps.build-results-handler.outputs.image }}" \ 
-              JwtIssuerUrl="https://dev-kbfejgei02ncd25d.us.auth0.com/" \ 
-              JwtAudience="https://yolo-authorizer.com" \ 
+              ParameterKey=ImageBucketName,ParameterValue="yolo-images-stack" \
+              ParameterKey=GenerateUrlHandlerImageUri,ParameterValue="${{ steps.build-generate-url.outputs.image }}" \
+              ParameterKey=InferenceWorkerImageUri,ParameterValue="${{ steps.build-inference-worker.outputs.image }}" \
+              ParameterKey=ResultsHandlerImageUri,ParameterValue="${{ steps.build-results-handler.outputs.image }}" \
+              ParameterKey=JwtIssuerUrl,ParameterValue="https://dev-kbfejgei02ncd25d.us.auth0.com/" \
+              ParameterKey=JwtAudience,ParameterValue="https://yolo-authorizer.com"
           echo "CloudFormation deployment initiated."
