@@ -19,6 +19,7 @@ MODEL_FILENAME = os.environ.get('MODEL_FILENAME', 'yolov8n.pt')
 table = dynamodb.Table(TABLE_NAME)
 TMP_DIR = '/tmp/'
 
+
 model_load_error = None
 model = None
 try:
