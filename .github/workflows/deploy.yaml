@@ -1,0 +1,84 @@
+name: Deploy YOLO API to AWS via CloudFormation
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read    
+  id-token: write 
+
+jobs:
+  build-and-deploy:
+    name: Build Docker Images and Deploy CloudFormation
+    runs-on: ubuntu-latest 
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::831926615067:role/arn:aws:iam::831926615067:role/GitHubActionsYoloDeployPolicy
+          aws-region: us-east-1
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+
+      - name: Build, tag, push Generate URL Handler image
+        id: build-generate-url
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REPOSITORY: yolo-generate-url-handler 
+          IMAGE_TAG: latest
+        run: |
+          echo "Building Generate URL Handler..."
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG ./yolo-docker-generate-url-handler
+          echo "Pushing Generate URL Handler..."
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          echo "::set-output name=image::$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" 
+
+      - name: Build, tag, push Inference Worker image
+        id: build-inference-worker
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REPOSITORY: yolo-inference-worker 
+          IMAGE_TAG: latest
+        run: |
+          echo "Building Inference Worker..."
+          docker build --platform linux/amd64 -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG ./yolo-docker-inference-worker
+          echo "Pushing Inference Worker..."
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          echo "::set-output name=image::$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" 
+
+      - name: Build, tag, push Results Handler image
+        id: build-results-handler 
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REPOSITORY: yolo-results-handler 
+          IMAGE_TAG: latest
+        run: |
+          echo "Building Results Handler..."
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG ./yolo-docker-results-handler
+          echo "Pushing Results Handler..."
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          echo "::set-output name=image::$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" 
+
+      - name: Deploy CloudFormation stack
+        run: |
+          aws cloudformation deploy \
+            --template-file yolo_api_stack.yaml \
+            --stack-name YoloApiStack \ 
+            --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM \
+            --parameter-overrides \
+              ImageBucketName="yolo-images-stack" \ # Nome EXATO do bucket S3
+              GenerateUrlHandlerImageUri="${{ steps.build-generate-url.outputs.image }}" \ 
+              InferenceWorkerImageUri="${{ steps.build-inference-worker.outputs.image }}" \ 
+              ResultsHandlerImageUri="${{ steps.build-results-handler.outputs.image }}" \ 
+              JwtIssuerUrl="https://dev-kbfejgei02ncd25d.us.auth0.com/" \ 
+              JwtAudience="https://yolo-authorizer.com" \ 
+          echo "CloudFormation deployment initiated."
